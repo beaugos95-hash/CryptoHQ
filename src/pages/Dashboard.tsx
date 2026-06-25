@@ -1,5 +1,6 @@
 import Sidebar from "../components/Sidebar"
 import { projects } from "../data/projects"
+import MiningCard from "../components/MiningCard";
 
 export default function Dashboard() {
   return (
@@ -87,6 +88,7 @@ export default function Dashboard() {
           ))}
         </div>
       </main>
+      <MiningCard />
     </div>
   )
 }
