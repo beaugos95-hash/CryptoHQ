@@ -1,7 +1,9 @@
+import { LAMPORTS_PER_SOL } from "@solana/web3.js";
 import { config, validateConfig } from "./config.js";
+import { getSolRates } from "./fx.js";
 import { sleep } from "./http.js";
 import { log } from "./logger.js";
-import { notify } from "./notify.js";
+import { TelegramControl } from "./telegram.js";
 import { Trader } from "./trader.js";
 import { checkWalletBalance } from "./wallet.js";
 
@@ -23,12 +25,27 @@ async function main(): Promise<void> {
     await sleep(5_000);
   }
   await checkWalletBalance();
-  notify(
-    `🤖 Bot started in ${config.dryRun ? "PAPER" : "LIVE"} mode — ` +
-      `${config.buyAmountSol} SOL/position, max ${config.maxOpenPositions} positions`,
-  );
 
   const trader = new Trader();
+  await trader.init();
+
+  const telegram = new TelegramControl(trader);
+  telegram.start();
+
+  const balanceSol = trader.paperBalanceLamports / LAMPORTS_PER_SOL;
+  let balanceLine = "";
+  if (config.dryRun) {
+    const { eurPerSol } = await getSolRates();
+    balanceLine = `\nBalance papier : ${balanceSol.toFixed(4)} SOL (${(balanceSol * eurPerSol).toFixed(2)}€)`;
+  }
+  await telegram.send(
+    `🤖 Bot démarré en mode ${config.dryRun ? "PAPER (simulation)" : "LIVE"}${balanceLine}\n` +
+      `Trading auto : ${trader.tradingEnabled ? "▶️ actif" : "⏸ en pause — envoyez /startbot pour démarrer"}\n` +
+      `Tapez /help pour les commandes.`,
+  );
+  if (!trader.tradingEnabled) {
+    log.info("Trading paused at startup (AUTOSTART=false) — waiting for /startbot on Telegram");
+  }
 
   const onSignal = (signal: string) => {
     if (shuttingDown) process.exit(1);
@@ -55,6 +72,8 @@ async function main(): Promise<void> {
     await sleep(config.monitorIntervalSec * 1_000);
   }
 
+  telegram.stop();
+  await telegram.send("🔌 Bot arrêté.");
   trader.printSummary();
 }
 

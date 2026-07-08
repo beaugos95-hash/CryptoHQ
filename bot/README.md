@@ -2,7 +2,10 @@
 
 Bot de trading automatisé pour meme coins sur Solana, conçu pour être **rapide** et **prudent** :
 
-- **Découverte** : scanne en continu les tokens tendance via l'API DexScreener (boosts + profils récents) et filtre par liquidité, FDV, volume, âge de la paire, pression acheteuse et momentum.
+- **Découverte multi-sources** : scanne en continu les tokens tendance via DexScreener (boosts + profils récents) et le flux trending de GMGN (best effort — pas d'API officielle), filtre par liquidité, FDV, volume, âge de la paire, pression acheteuse et momentum.
+- **Enrichissement social** : les meilleurs candidats sont enrichis via **Birdeye** (présence Twitter/Telegram/site web) et, si un bearer token API v2 est fourni, via **Twitter/X** (nombre de tweets mentionnant le token dans la dernière heure — détecte les drops coordonnés). Le score de classement en tient compte.
+- **Contrôle total par Telegram** : `/startbot`, `/stopbot`, `/status`, `/positions`, `/stats`, `/buy <mint>`, `/sell <symbole|all>`, `/panic` (tout vendre + pause), `/set <param> <valeur>` (réglage à chaud de 20+ paramètres), `/settings`, `/help`. Seul le chat configuré peut commander le bot.
+- **Portefeuille virtuel en euros** : en paper trading, le bot démarre avec `PAPER_BALANCE_EUR` (500 € par défaut) convertis en SOL au cours réel ; chaque achat débite la balance, chaque vente la crédite.
 - **Anti-rug on-chain** : avant chaque achat, vérifie directement sur la blockchain que la *mint authority* et la *freeze authority* sont révoquées, et que la distribution des holders n'est pas trop concentrée (repli sur l'API RugCheck si le RPC est limité).
 - **Anti-honeypot** : avant chaque achat, simule la revente du montant exact qui serait détenu ; si aucune route de vente n'existe ou si l'aller-retour achat+vente perd plus de `MAX_ROUND_TRIP_LOSS_PCT`, le token est rejeté (taxes cachées, liquidité à sens unique).
 - **Exécution** : swaps via l'agrégateur **Jupiter** (meilleure route sur tous les DEX Solana), avec *priority fees* pour une inclusion rapide et confirmation vérifiée de chaque transaction.
@@ -65,19 +68,39 @@ La liste complète des paramètres est documentée dans [`.env.example`](.env.ex
 ```
 src/
 ├── index.ts      # Boucle principale (monitoring rapide + scans périodiques)
-├── config.ts     # Configuration typée + validation au démarrage
-├── discovery.ts  # Découverte et filtrage des tokens (DexScreener)
+├── config.ts     # Configuration typée (alias env), validation, paramètres à chaud
+├── discovery.ts  # Découverte multi-sources et filtrage + enrichissement social
+├── gmgn.ts       # Flux trending GMGN (best effort, auto-désactivation)
+├── birdeye.ts    # Liens sociaux des tokens via Birdeye (cache + quota backoff)
+├── twitter.ts    # Buzz Twitter/X par token (nécessite un bearer token payant)
 ├── safety.ts     # Contrôles anti-rug (mint/freeze authority, holders, RugCheck)
 ├── jupiter.ts    # Quotes et exécution des swaps (Jupiter), confirmation on-chain
-├── trader.ts     # Positions : anti-honeypot, TP1 partiel, TP/SL/trailing/timeout
+├── trader.ts     # Positions : anti-honeypot, TP1 partiel, TP/SL/trailing/timeout,
+│                 #   balance papier, achats/ventes manuels
+├── telegram.ts   # Contrôle complet par Telegram (long polling, chat autorisé)
+├── fx.ts         # Taux SOL/EUR (CoinGecko, cache 5 min)
 ├── stats.ts      # Rapport de statistiques (npm run stats)
-├── notify.ts     # Notifications Telegram (optionnel)
+├── notify.ts     # Notifications Telegram simples
 ├── state.ts      # Persistance atomique de l'état
 ├── wallet.ts     # Connexion RPC + keypair + vérification du solde
 ├── http.ts       # Client HTTP avec timeout et retries exponentiels
 ├── logger.ts     # Logs structurés
 └── types.ts      # Types partagés
 ```
+
+## Contrôle Telegram
+
+| Commande | Effet |
+|---|---|
+| `/startbot` / `/stopbot` | Activer / mettre en pause le trading automatique |
+| `/status` | Mode, balance (SOL et €), PnL, positions, état des sources |
+| `/positions` | Détail des positions ouvertes avec PnL temps réel |
+| `/stats` | Win rate, PnL moyen, répartition des sorties |
+| `/buy <mint>` | Achat manuel (mêmes contrôles anti-rug/honeypot) |
+| `/sell <symbole\|mint\|all>` | Vente manuelle |
+| `/panic` | Tout vendre immédiatement et mettre en pause |
+| `/set <param> <valeur>` | Modifier un paramètre à chaud (ex : `/set stopLossPct 20`) |
+| `/settings` | Liste des paramètres modifiables et valeurs actuelles |
 
 ## Avertissement
 

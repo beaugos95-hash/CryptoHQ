@@ -1,6 +1,9 @@
+import { getTokenSocials, hasSocialPresence } from "./birdeye.js";
 import { config } from "./config.js";
-import { fetchJson } from "./http.js";
+import { getGmgnTrendingMints } from "./gmgn.js";
+import { fetchJson, sleep } from "./http.js";
 import { log } from "./logger.js";
+import { getTweetBuzz, twitterEnabled } from "./twitter.js";
 import type { DexPair, TokenCandidate, TokenProfile } from "./types.js";
 import { SOL_MINT } from "./wallet.js";
 
@@ -11,19 +14,23 @@ const ALLOWED_DEXES = new Set(["raydium", "orca", "meteora", "pumpswap", "pumpfu
 
 /**
  * Collects candidate mints from DexScreener's "boosted" and "latest profiles"
- * feeds, which surface trending / newly promoted tokens.
+ * feeds plus GMGN's trending list (best effort), all fetched in parallel.
  */
 async function collectCandidateMints(): Promise<string[]> {
   const mints = new Set<string>();
 
-  const sources: Promise<TokenProfile[]>[] = [
+  const dexscreenerSources: Promise<TokenProfile[]>[] = [
     fetchJson<TokenProfile[]>(`${DEXSCREENER}/token-boosts/latest/v1`),
     fetchJson<TokenProfile[]>(`${DEXSCREENER}/token-boosts/top/v1`),
     fetchJson<TokenProfile[]>(`${DEXSCREENER}/token-profiles/latest/v1`),
   ];
 
-  const results = await Promise.allSettled(sources);
-  for (const result of results) {
+  const [dexResults, gmgnMints] = await Promise.all([
+    Promise.allSettled(dexscreenerSources),
+    getGmgnTrendingMints(),
+  ]);
+
+  for (const result of dexResults) {
     if (result.status === "rejected") {
       log.debug(`Discovery source failed: ${String(result.reason)}`);
       continue;
@@ -34,6 +41,7 @@ async function collectCandidateMints(): Promise<string[]> {
       }
     }
   }
+  for (const mint of gmgnMints) mints.add(mint);
   return [...mints];
 }
 
@@ -125,7 +133,36 @@ function score(c: TokenCandidate): number {
 }
 
 /**
- * Full discovery pass: trending mints -> best SOL pairs -> filters -> ranked candidates.
+ * Enriches the top candidates with social data and applies score bonuses:
+ *  - Birdeye: does the token have an active Twitter/Telegram/website?
+ *  - Twitter API (when a bearer token is configured): tweet buzz over
+ *    the last hour, which catches coordinated token "drops".
+ */
+async function enrichTopCandidates(candidates: TokenCandidate[]): Promise<void> {
+  // Sequential with a small gap: Birdeye's free tier allows ~1 request/s.
+  const top = candidates.slice(0, 5);
+  for (const [index, candidate] of top.entries()) {
+    const socials = await getTokenSocials(candidate.mint);
+    if (socials !== null) candidate.hasSocials = hasSocialPresence(socials);
+    if (twitterEnabled()) {
+      const buzz = await getTweetBuzz(candidate.symbol, candidate.mint);
+      if (buzz !== null) candidate.tweetBuzz = buzz;
+    }
+    if (index < top.length - 1) await sleep(1_100);
+  }
+}
+
+/** Bonus applied on top of the market-based score. */
+function socialBonus(c: TokenCandidate): number {
+  let bonus = 0;
+  if (c.hasSocials) bonus += config.socialScoreBonus;
+  if (c.tweetBuzz !== undefined) bonus += Math.min(c.tweetBuzz / 20, config.socialScoreBonus * 2);
+  return bonus;
+}
+
+/**
+ * Full discovery pass: trending mints (DexScreener + GMGN) -> best SOL pairs
+ * -> filters -> social enrichment (Birdeye/Twitter) -> ranked candidates.
  */
 export async function discoverCandidates(): Promise<TokenCandidate[]> {
   const mints = await collectCandidateMints();
@@ -148,6 +185,9 @@ export async function discoverCandidates(): Promise<TokenCandidate[]> {
   }
 
   candidates.sort((a, b) => score(b) - score(a));
+  await enrichTopCandidates(candidates);
+  candidates.sort((a, b) => score(b) + socialBonus(b) - (score(a) + socialBonus(a)));
+
   if (candidates.length > 0) {
     log.info(
       `Discovery: ${candidates.length}/${pairs.size} candidates passed filters`,
@@ -155,6 +195,13 @@ export async function discoverCandidates(): Promise<TokenCandidate[]> {
     );
   }
   return candidates;
+}
+
+/** Builds a candidate for a specific mint (used by the Telegram /buy command). */
+export async function getCandidateByMint(mint: string): Promise<TokenCandidate | null> {
+  const pairs = await fetchBestPairs([mint]);
+  const pair = pairs.get(mint);
+  return pair ? pairToCandidate(pair) : null;
 }
 
 /** Fetches the current USD price of a token from its most liquid pair. */

@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { LAMPORTS_PER_SOL } from "@solana/web3.js";
 import { config } from "./config.js";
-import { discoverCandidates, getTokenPriceUsd } from "./discovery.js";
+import { discoverCandidates, getCandidateByMint, getTokenPriceUsd } from "./discovery.js";
+import { getSolRates } from "./fx.js";
 import { log } from "./logger.js";
 import { notify } from "./notify.js";
 import { checkTokenSafety } from "./safety.js";
@@ -11,16 +12,54 @@ import type { BotState, ExitReason, Position, TokenCandidate } from "./types.js"
 import { SOL_MINT } from "./wallet.js";
 
 export class Trader {
-  private readonly state: BotState;
+  readonly state: BotState;
   /** UTC date for which the daily-loss pause was already announced. */
   private dailyPauseAnnouncedFor = "";
 
   constructor() {
     this.state = loadState();
+    this.state.tradingEnabled ??= config.autostart;
+  }
+
+  /**
+   * One-time async setup: funds the paper wallet from PAPER_BALANCE_EUR at
+   * the live SOL/EUR rate on the very first run.
+   */
+  async init(): Promise<void> {
+    if (config.dryRun && this.state.paperBalanceLamports === undefined) {
+      const { eurPerSol } = await getSolRates();
+      const sol = config.paperBalanceEur / eurPerSol;
+      this.state.paperBalanceLamports = Math.round(sol * LAMPORTS_PER_SOL);
+      saveState(this.state);
+      log.info(
+        `Paper wallet funded: ${config.paperBalanceEur}€ = ${sol.toFixed(4)} SOL ` +
+          `(1 SOL = ${eurPerSol.toFixed(2)}€)`,
+      );
+    }
   }
 
   get openPositions(): Position[] {
     return this.state.positions.filter((p) => p.status === "open");
+  }
+
+  get tradingEnabled(): boolean {
+    return this.state.tradingEnabled ?? true;
+  }
+
+  setTradingEnabled(enabled: boolean): void {
+    this.state.tradingEnabled = enabled;
+    saveState(this.state);
+    log.info(`Automatic trading ${enabled ? "ENABLED" : "PAUSED"} (via Telegram)`);
+  }
+
+  /** Paper wallet balance in lamports (paper mode only). */
+  get paperBalanceLamports(): number {
+    return this.state.paperBalanceLamports ?? 0;
+  }
+
+  private adjustPaperBalance(deltaLamports: number): void {
+    if (!config.dryRun) return;
+    this.state.paperBalanceLamports = Math.max(0, this.paperBalanceLamports + deltaLamports);
   }
 
   private isOnCooldown(mint: string): boolean {
@@ -69,6 +108,7 @@ export class Trader {
 
   /** One discovery pass: finds candidates and opens positions if slots are free. */
   async scanAndBuy(): Promise<void> {
+    if (!this.tradingEnabled) return;
     if (this.isDailyLossCapHit()) return;
     const freeSlots = config.maxOpenPositions - this.openPositions.length;
     if (freeSlots <= 0) return;
@@ -133,6 +173,11 @@ export class Trader {
 
   private async openPosition(candidate: TokenCandidate, decimals: number): Promise<void> {
     const lamports = BigInt(Math.round(config.buyAmountSol * LAMPORTS_PER_SOL));
+    if (config.dryRun && this.paperBalanceLamports < Number(lamports)) {
+      throw new Error(
+        `insufficient paper balance (${(this.paperBalanceLamports / LAMPORTS_PER_SOL).toFixed(4)} SOL)`,
+      );
+    }
 
     const quote = await getQuote(SOL_MINT, candidate.mint, lamports);
     const priceImpact = Math.abs(Number(quote.priceImpactPct)) * 100;
@@ -166,6 +211,7 @@ export class Trader {
       paper: config.dryRun,
     };
     this.state.positions.push(position);
+    this.adjustPaperBalance(-Number(lamports));
     saveState(this.state);
 
     log.info(
@@ -272,6 +318,7 @@ export class Trader {
     position.tp1Done = true;
     position.solReceivedLamports = (position.solReceivedLamports ?? 0) + solReceivedLamports;
     if (signature) position.sellTxSignature = signature;
+    this.adjustPaperBalance(solReceivedLamports);
     this.addRealizedPnl(pnlSol);
     saveState(this.state);
 
@@ -312,6 +359,7 @@ export class Trader {
     // Overall economic result of the position (partials included).
     position.pnlPct = ((totalReceived - position.solSpentLamports) / position.solSpentLamports) * 100;
 
+    this.adjustPaperBalance(solReceivedLamports);
     this.addRealizedPnl(pnlSol);
     this.setCooldown(position.mint);
     saveState(this.state);
@@ -324,6 +372,74 @@ export class Trader {
       `total: ${sign(this.state.realizedPnlSol)}${this.state.realizedPnlSol.toFixed(4)} SOL`;
     log.info(message);
     notify(`${position.pnlPct >= 0 ? "🟢" : "🔴"} ${message}`);
+  }
+
+  // ---- Manual control (Telegram) ----
+
+  /**
+   * Manual buy requested via Telegram. Runs the same safety and honeypot
+   * checks as automatic entries; returns a human-readable result message.
+   */
+  async manualBuy(mint: string): Promise<string> {
+    if (this.openPositions.some((p) => p.mint === mint)) {
+      return "Position déjà ouverte sur ce token.";
+    }
+    if (this.openPositions.length >= config.maxOpenPositions) {
+      return `Nombre max de positions atteint (${config.maxOpenPositions}).`;
+    }
+    const candidate = await getCandidateByMint(mint);
+    if (!candidate) return "Token introuvable sur DexScreener (paire SOL requise).";
+
+    const safety = await checkTokenSafety(mint).catch((err) => {
+      log.warn(`Safety check errored for manual buy: ${String(err)}`);
+      return null;
+    });
+    if (!safety) return "Échec du contrôle de sécurité (RPC), réessayez.";
+    if (!safety.ok) return `Achat refusé — ${safety.reasons.join("; ")}`;
+
+    try {
+      await this.openPosition(candidate, safety.decimals);
+      saveState(this.state);
+      return `Achat exécuté : ${candidate.symbol} — ${config.buyAmountSol} SOL @ $${candidate.priceUsd}`;
+    } catch (err) {
+      return `Achat échoué : ${String(err)}`;
+    }
+  }
+
+  /**
+   * Manual sell requested via Telegram. `target` is a symbol, a mint, or
+   * "all"; returns a human-readable result message.
+   */
+  async manualSell(target: string): Promise<string> {
+    const open = this.openPositions;
+    if (open.length === 0) return "Aucune position ouverte.";
+
+    const matches =
+      target.toLowerCase() === "all"
+        ? open
+        : open.filter(
+            (p) =>
+              p.symbol.toLowerCase() === target.toLowerCase() ||
+              p.mint === target ||
+              p.mint.startsWith(target),
+          );
+    if (matches.length === 0) return `Aucune position ne correspond à "${target}".`;
+
+    const results: string[] = [];
+    for (const position of matches) {
+      const price = await getTokenPriceUsd(position.mint);
+      if (price === null || price <= 0) {
+        results.push(`${position.symbol}: prix indisponible, vente annulée`);
+        continue;
+      }
+      try {
+        await this.closePosition(position, price, "manual");
+        results.push(`${position.symbol}: vendu (${(position.pnlPct ?? 0).toFixed(1)}%)`);
+      } catch (err) {
+        results.push(`${position.symbol}: échec — ${String(err)}`);
+      }
+    }
+    return results.join("\n");
   }
 
   /** Summary printed on shutdown. */

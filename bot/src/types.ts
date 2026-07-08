@@ -43,6 +43,10 @@ export interface TokenCandidate {
   priceChangeH1: number;
   pairAgeMinutes: number;
   dexScreenerUrl: string;
+  /** Set during enrichment (Birdeye): token has Twitter/Telegram/website. */
+  hasSocials?: boolean;
+  /** Set during enrichment (Twitter API): tweets mentioning the token in the last hour. */
+  tweetBuzz?: number;
 }
 
 // ---- Safety report ----
@@ -107,4 +111,9 @@ export interface BotState {
   realizedPnlSol: number;
   /** Rolling realized PnL for the current UTC day, for the daily loss cap. */
   daily: { date: string; pnlSol: number };
+  /** Virtual SOL balance for paper trading (lamports). Set on first run from
+   *  PAPER_BALANCE_EUR at the live SOL/EUR rate; buys deduct, sells credit. */
+  paperBalanceLamports?: number;
+  /** Whether automatic trading is enabled (controlled via Telegram). */
+  tradingEnabled?: boolean;
 }

@@ -1,33 +1,52 @@
 import "dotenv/config";
 
+/** Returns the first non-empty value among several env var names (aliases). */
+function raw(...names: string[]): string | undefined {
+  for (const name of names) {
+    const value = process.env[name];
+    if (value !== undefined && value !== "") return value;
+  }
+  return undefined;
+}
+
 function num(name: string, fallback: number): number {
-  const raw = process.env[name];
-  if (raw === undefined || raw === "") return fallback;
-  const v = Number(raw);
-  if (!Number.isFinite(v)) throw new Error(`Invalid numeric value for ${name}: "${raw}"`);
+  const value = raw(name);
+  if (value === undefined) return fallback;
+  const v = Number(value);
+  if (!Number.isFinite(v)) throw new Error(`Invalid numeric value for ${name}: "${value}"`);
   return v;
 }
 
-function bool(name: string, fallback: boolean): boolean {
-  const raw = process.env[name];
-  if (raw === undefined || raw === "") return fallback;
-  return ["1", "true", "yes", "on"].includes(raw.toLowerCase());
+function bool(fallback: boolean, ...names: string[]): boolean {
+  const value = raw(...names);
+  if (value === undefined) return fallback;
+  return ["1", "true", "yes", "on"].includes(value.toLowerCase());
 }
 
-function str(name: string, fallback: string): string {
-  const raw = process.env[name];
-  return raw === undefined || raw === "" ? fallback : raw;
+function str(fallback: string, ...names: string[]): string {
+  return raw(...names) ?? fallback;
 }
 
+/**
+ * Configuration. Fields are mutable on purpose: the Telegram /set command
+ * adjusts trading parameters at runtime without a restart.
+ * Env var aliases (PAPER_TRADING, SOLANA_PRIVATE_KEY…) are accepted for
+ * compatibility with common .env layouts.
+ */
 export const config = {
   /** Paper-trading mode: no real transaction is ever sent when true. DEFAULT: true. */
-  dryRun: bool("DRY_RUN", true),
+  dryRun: bool(true, "DRY_RUN", "PAPER_TRADING"),
+  /** Start with trading enabled; when false, wait for /startbot on Telegram. */
+  autostart: bool(true, "AUTOSTART", "THEBOT_AUTOSTART"),
 
-  rpcUrl: str("RPC_URL", "https://api.mainnet-beta.solana.com"),
+  rpcUrl: str("https://api.mainnet-beta.solana.com", "RPC_URL", "SOLANA_RPC_URL"),
   /** Base58-encoded private key. Only required when DRY_RUN=false. */
-  privateKey: process.env.PRIVATE_KEY ?? "",
+  privateKey: raw("PRIVATE_KEY", "SOLANA_PRIVATE_KEY") ?? "",
 
-  jupiterBaseUrl: str("JUPITER_BASE_URL", "https://lite-api.jup.ag"),
+  jupiterBaseUrl: str("https://lite-api.jup.ag", "JUPITER_BASE_URL", "JUPITER_API_URL"),
+
+  /** Virtual wallet size for paper trading, in EUR. */
+  paperBalanceEur: num("PAPER_BALANCE_EUR", 500),
 
   // ---- Trade sizing & risk ----
   /** Amount of SOL committed per position. */
@@ -69,12 +88,12 @@ export const config = {
   /** Minimum number of buy transactions in the last hour. */
   minBuysLastHour: num("MIN_BUYS_LAST_HOUR", 50),
   /** Require m5 price change to be positive (momentum entry). */
-  requirePositiveMomentum: bool("REQUIRE_POSITIVE_MOMENTUM", true),
+  requirePositiveMomentum: bool(true, "REQUIRE_POSITIVE_MOMENTUM"),
   /** Max share of supply held by the single largest non-pool holder, in percent. */
   maxTopHolderPct: num("MAX_TOP_HOLDER_PCT", 15),
   /** Honeypot guard: simulate a sell route before buying and reject the token
    *  if selling is impossible or the round trip loses too much. */
-  honeypotCheck: bool("HONEYPOT_CHECK", true),
+  honeypotCheck: bool(true, "HONEYPOT_CHECK"),
   /** Max acceptable buy+sell round-trip loss in percent for the honeypot guard. */
   maxRoundTripLossPct: num("MAX_ROUND_TRIP_LOSS_PCT", 10),
 
@@ -87,14 +106,51 @@ export const config = {
   reentryCooldownMinutes: num("REENTRY_COOLDOWN_MINUTES", 120),
 
   /** File where the bot persists its state (positions, history) across restarts. */
-  stateFile: str("STATE_FILE", "state/bot-state.json"),
+  stateFile: str("state/bot-state.json", "STATE_FILE"),
 
-  // ---- Notifications (optional) ----
-  telegramBotToken: process.env.TELEGRAM_BOT_TOKEN ?? "",
-  telegramChatId: process.env.TELEGRAM_CHAT_ID ?? "",
-} as const;
+  // ---- External data sources (optional) ----
+  /** Birdeye API key: token overviews and social-link enrichment. */
+  birdeyeApiKey: raw("BIRDEYE_API_KEY") ?? "",
+  /** Twitter/X API v2 bearer token: social buzz scoring (paid API). */
+  twitterBearerToken: raw("TWITTER_BEARER_TOKEN") ?? "",
+  /** GMGN trending feed (best effort: gmgn.ai has no official public API). */
+  gmgnEnabled: bool(true, "GMGN_ENABLED"),
+  /** Extra score bonus applied to candidates with an active social presence. */
+  socialScoreBonus: num("SOCIAL_SCORE_BONUS", 2),
+
+  // ---- Telegram (notifications + full remote control) ----
+  telegramBotToken: raw("TELEGRAM_BOT_TOKEN") ?? "",
+  telegramChatId: raw("TELEGRAM_CHAT_ID") ?? "",
+};
 
 export type Config = typeof config;
+
+/** Parameters adjustable at runtime via the Telegram /set command. */
+export const TUNABLE_KEYS = [
+  "buyAmountSol",
+  "maxOpenPositions",
+  "slippageBps",
+  "tp1Pct",
+  "tp1SellFraction",
+  "takeProfitPct",
+  "stopLossPct",
+  "trailingStopPct",
+  "maxHoldMinutes",
+  "maxDailyLossSol",
+  "minLiquidityUsd",
+  "maxFdvUsd",
+  "minFdvUsd",
+  "minVolume24hUsd",
+  "minBuysLastHour",
+  "maxTopHolderPct",
+  "maxRoundTripLossPct",
+  "scanIntervalSec",
+  "monitorIntervalSec",
+  "reentryCooldownMinutes",
+  "socialScoreBonus",
+] as const satisfies readonly (keyof Config)[];
+
+export type TunableKey = (typeof TUNABLE_KEYS)[number];
 
 export function validateConfig(): void {
   if (!config.dryRun && !config.privateKey) {
