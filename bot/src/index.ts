@@ -16,9 +16,8 @@ async function main(): Promise<void> {
     mode: config.dryRun ? "PAPER (dry-run)" : "LIVE",
     buyAmountSol: config.buyAmountSol,
     maxOpenPositions: config.maxOpenPositions,
-    takeProfitPct: config.takeProfitPct,
-    stopLossPct: config.stopLossPct,
-    trailingStopPct: config.trailingStopPct,
+    ladder: `SL -${config.stopLossPct}% | TP1 +${config.tp1Pct}% (floor +${config.tp1FloorPct}%) | TP2 +${config.tp2Pct}% (floor +${config.tp2FloorPct}%) | TP3 +${config.tp3Pct}% (runner ${config.runnerKeepFraction * 100}%, trail ${config.runnerTrailPct}pts)`,
+    daily: `loss cap -${config.maxDailyLossPct}%, profit lock +${config.dailyProfitLockPct}% (tiers ${config.dailyProfitTierPct}pts)`,
   });
   if (!config.dryRun) {
     log.warn("LIVE MODE: real funds will be traded. Ctrl+C now if this is unintended.");

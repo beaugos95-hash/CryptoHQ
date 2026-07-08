@@ -69,9 +69,9 @@ export interface SafetyReport {
 export type PositionStatus = "open" | "closed";
 
 export type ExitReason =
-  | "take_profit"
   | "stop_loss"
-  | "trailing_stop"
+  | "profit_floor"
+  | "runner_trailing_stop"
   | "max_hold_time"
   | "manual";
 
@@ -86,8 +86,11 @@ export interface Position {
   tokenAmountRaw: string;
   /** Raw token amount still held (decreases after partial take-profits). */
   remainingTokenRaw: string;
-  /** True once the TP1 partial sell has been executed. */
-  tp1Done: boolean;
+  /** Take-profit ladder progress: 0 = none hit, 1 = TP1 done, 2 = TP2 done,
+   *  3 = TP3 done (only the runner remains). */
+  tpLevel: number;
+  /** Runner trailing stop level in PnL percent (ratchets up with the peak). */
+  runnerStopPct?: number;
   tokenDecimals: number;
   entryPriceUsd: number;
   /** Highest price observed while the position is open (for trailing stop). */
@@ -109,8 +112,16 @@ export interface BotState {
   /** mint -> last time (ms) we exited or rejected it, for the re-entry cooldown. */
   cooldowns: Record<string, number>;
   realizedPnlSol: number;
-  /** Rolling realized PnL for the current UTC day, for the daily loss cap. */
-  daily: { date: string; pnlSol: number };
+  /** Rolling daily figures for the loss cap and the profit lock. */
+  daily: {
+    date: string;
+    pnlSol: number;
+    /** Balance (SOL) at the start of the UTC day; loss/profit percentages
+     *  are computed against this reference. */
+    startBalanceSol?: number;
+    /** Highest daily profit percent reached (for the tiered profit lock). */
+    peakProfitPct?: number;
+  };
   /** Virtual SOL balance for paper trading (lamports). Set on first run from
    *  PAPER_BALANCE_EUR at the live SOL/EUR rate; buys deduct, sells credit. */
   paperBalanceLamports?: number;

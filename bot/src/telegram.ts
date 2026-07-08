@@ -214,9 +214,15 @@ export class TelegramControl {
           ? `${(((price - p.entryPriceUsd) / p.entryPriceUsd) * 100).toFixed(1)}%`
           : "?";
       const held = Math.round((Date.now() - p.openedAt) / 60_000);
+      const ladder =
+        p.tpLevel === 0
+          ? ""
+          : p.tpLevel === 3
+            ? ` — runner (trail +${(p.runnerStopPct ?? 0).toFixed(0)}%)`
+            : ` — TP${p.tpLevel} ✅`;
       lines.push(
-        `${p.symbol} — PnL ${pnl.startsWith("-") ? "🔻" : "🟢"} ${pnl} — ${held}min` +
-          `${p.tp1Done ? " — TP1 ✅" : ""}\n  entrée $${p.entryPriceUsd} → $${price ?? "?"}`,
+        `${p.symbol} — PnL ${pnl.startsWith("-") ? "🔻" : "🟢"} ${pnl} — ${held}min${ladder}` +
+          `\n  entrée $${p.entryPriceUsd} → $${price ?? "?"}`,
       );
     }
     return lines.join("\n");

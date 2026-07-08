@@ -2,7 +2,7 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { config } from "./config.js";
 import { log } from "./logger.js";
-import type { BotState } from "./types.js";
+import type { BotState, Position } from "./types.js";
 
 const statePath = resolve(config.stateFile);
 
@@ -24,7 +24,9 @@ function normalize(state: BotState): BotState {
   state.daily ??= { date: todayUtc(), pnlSol: 0 };
   for (const position of state.positions) {
     position.remainingTokenRaw ??= position.tokenAmountRaw;
-    position.tp1Done ??= false;
+    // Legacy field from the single-TP version of the ladder.
+    const legacy = position as Position & { tp1Done?: boolean };
+    position.tpLevel ??= legacy.tp1Done ? 1 : 0;
   }
   return state;
 }

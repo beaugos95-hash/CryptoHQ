@@ -9,7 +9,9 @@ Bot de trading automatisé pour meme coins sur Solana, conçu pour être **rapid
 - **Anti-rug on-chain** : avant chaque achat, vérifie directement sur la blockchain que la *mint authority* et la *freeze authority* sont révoquées, et que la distribution des holders n'est pas trop concentrée (repli sur l'API RugCheck si le RPC est limité).
 - **Anti-honeypot** : avant chaque achat, simule la revente du montant exact qui serait détenu ; si aucune route de vente n'existe ou si l'aller-retour achat+vente perd plus de `MAX_ROUND_TRIP_LOSS_PCT`, le token est rejeté (taxes cachées, liquidité à sens unique).
 - **Exécution** : swaps via l'agrégateur **Jupiter** (meilleure route sur tous les DEX Solana), avec *priority fees* pour une inclusion rapide et confirmation vérifiée de chaque transaction.
-- **Gestion du risque** : take-profit partiel (TP1 : vend la moitié à +40 % et laisse courir le reste), take-profit final, stop-loss dur, trailing stop, sortie forcée après une durée maximale, plafond de perte journalière (pause des achats jusqu'au lendemain UTC), nombre de positions simultanées plafonné, cooldown anti re-buy.
+- **Sorties en échelle (ladder)** : SL de base −12 % → TP1 à +15 % (vend 50 %, stop verrouillé à +10 %) → TP2 à +35 % (vend 50 % du restant, stop à +30 %) → TP3 à +75 % (vend le reste sauf 10 % laissés en « runner ») → le runner court sans plafond avec un trailing stop qui suit le pic à 20 points en dessous (pic +135 % → stop +115 %) et ne fait que monter.
+- **Coupe-circuits journaliers** : perte max de 25 % de la balance de début de journée (pause des achats jusqu'au lendemain UTC) ; et verrouillage des gains par paliers : dès +25 % de profit journalier, si le profit retombe sous le palier de 5 points inférieur au pic (pic +45 % → plancher +40 %), le bot arrête d'acheter pour la journée.
+- Sortie forcée après une durée maximale si aucun TP n'est touché, nombre de positions simultanées plafonné, cooldown anti re-buy.
 - **Notifications Telegram** (optionnel) : achat, vente, TP1 et alertes envoyés sur votre téléphone.
 - **Mode paper trading par défaut** (`DRY_RUN=true`) : le bot simule les trades sans jamais envoyer de transaction réelle. Idéal pour valider la stratégie avant d'engager des fonds.
 - **État persistant** : positions et PnL sont sauvegardés atomiquement dans `state/bot-state.json` — un crash ou un redémarrage ne perd rien.
@@ -48,12 +50,14 @@ npm run stats
 |---|---|---|
 | `BUY_AMOUNT_SOL` | `0.05` | Montant de SOL engagé par position |
 | `MAX_OPEN_POSITIONS` | `3` | Positions simultanées maximum |
-| `TP1_PCT` / `TP1_SELL_FRACTION` | `40` / `0.5` | À +40 %, vend 50 % de la position et laisse courir le reste |
-| `TAKE_PROFIT_PCT` | `100` | Clôture totale à +100 % |
-| `STOP_LOSS_PCT` | `25` | Vente automatique à −25 % |
-| `TRAILING_STOP_PCT` | `20` | Vente si le prix retombe de 20 % sous son pic (en profit) |
-| `MAX_HOLD_MINUTES` | `60` | Sortie forcée après 60 min |
-| `MAX_DAILY_LOSS_SOL` | `0.25` | Pause des achats jusqu'au lendemain UTC après −0.25 SOL réalisés |
+| `STOP_LOSS_PCT` | `12` | Stop-loss de base à −12 % (avant tout TP) |
+| `TP1_PCT` / `TP1_FLOOR_PCT` | `15` / `10` | À +15 % : vend 50 %, stop verrouillé à +10 % |
+| `TP2_PCT` / `TP2_FLOOR_PCT` | `35` / `30` | À +35 % : vend 50 % du restant, stop à +30 % |
+| `TP3_PCT` / `RUNNER_KEEP_FRACTION` | `75` / `0.1` | À +75 % : vend le reste sauf 10 % en runner |
+| `RUNNER_TRAIL_PCT` | `20` | Trailing du runner : stop à 20 points sous le pic (ne fait que monter) |
+| `MAX_HOLD_MINUTES` | `60` | Sortie forcée après 60 min si aucun TP touché |
+| `MAX_DAILY_LOSS_PCT` | `25` | Pause des achats à −25 % de la balance du jour |
+| `DAILY_PROFIT_LOCK_PCT` / `DAILY_PROFIT_TIER_PCT` | `25` / `5` | Verrouillage des gains journaliers par paliers de 5 pts dès +25 % |
 | `MIN_LIQUIDITY_USD` | `20000` | Liquidité minimale du pool |
 | `MAX_TOP_HOLDER_PCT` | `15` | Concentration max du plus gros holder hors LP |
 | `HONEYPOT_CHECK` | `true` | Simule la revente avant chaque achat |

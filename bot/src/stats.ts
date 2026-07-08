@@ -75,9 +75,10 @@ if (closed.length === 0) {
 if (open.length > 0) {
   console.log("\n--- Open positions ---");
   for (const p of open) {
+    const ladder = p.tpLevel === 0 ? "" : p.tpLevel === 3 ? "  (runner)" : `  (TP${p.tpLevel} done)`;
     console.log(
       `${p.symbol.padEnd(12)} entry $${p.entryPriceUsd}  held ${holdMinutes(p).toFixed(0)}min` +
-        `${p.tp1Done ? "  (TP1 done)" : ""}${p.paper ? "  [paper]" : ""}`,
+        `${ladder}${p.paper ? "  [paper]" : ""}`,
     );
   }
 }

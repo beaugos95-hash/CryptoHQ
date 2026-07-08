@@ -55,19 +55,38 @@ export const config = {
   maxOpenPositions: num("MAX_OPEN_POSITIONS", 3),
   /** Max slippage tolerated on swaps, in basis points (300 = 3%). */
   slippageBps: num("SLIPPAGE_BPS", 300),
-  /** First take-profit level in percent: sell TP1_SELL_FRACTION of the bag (0 disables). */
-  tp1Pct: num("TP1_PCT", 40),
-  /** Fraction of the position sold at TP1 (0.5 = half). */
-  tp1SellFraction: num("TP1_SELL_FRACTION", 0.5),
-  /** Final take-profit threshold in percent: closes the whole position. */
-  takeProfitPct: num("TAKE_PROFIT_PCT", 100),
-  /** Hard stop-loss threshold in percent (e.g. 25 = -25%). */
-  stopLossPct: num("STOP_LOSS_PCT", 25),
-  /** Pause new buys for the rest of the UTC day once realized losses reach this (0 disables). */
-  maxDailyLossSol: num("MAX_DAILY_LOSS_SOL", 0.25),
-  /** Trailing stop: exit if price falls this % below the peak reached (0 disables). */
-  trailingStopPct: num("TRAILING_STOP_PCT", 20),
-  /** Force-exit a position after this many minutes regardless of PnL (0 disables). */
+
+  // ---- Take-profit ladder ----
+  /** Base hard stop-loss in percent, active until TP1 (e.g. 12 = -12%). */
+  stopLossPct: num("STOP_LOSS_PCT", 12),
+  /** TP1 trigger in percent: sell half the position, lock the stop at TP1_FLOOR_PCT. */
+  tp1Pct: num("TP1_PCT", 15),
+  /** After TP1, exit everything if PnL falls back to this floor (in percent). */
+  tp1FloorPct: num("TP1_FLOOR_PCT", 10),
+  /** TP2 trigger in percent: sell half of what remains, lock the stop at TP2_FLOOR_PCT. */
+  tp2Pct: num("TP2_PCT", 35),
+  /** After TP2, exit everything if PnL falls back to this floor (in percent). */
+  tp2FloorPct: num("TP2_FLOOR_PCT", 30),
+  /** TP3 trigger in percent: sell the rest except RUNNER_KEEP_FRACTION left running. */
+  tp3Pct: num("TP3_PCT", 75),
+  /** Fraction of the remaining bag kept as a "runner" at TP3 (0.1 = 10%). */
+  runnerKeepFraction: num("RUNNER_KEEP_FRACTION", 0.1),
+  /** Runner trailing stop distance in PnL points below the peak (ratchets up only).
+   *  Example: peak +135% with 20 -> stop at +115%. */
+  runnerTrailPct: num("RUNNER_TRAIL_PCT", 20),
+
+  // ---- Daily circuit breakers ----
+  /** Stop opening positions for the UTC day once the day's realized loss
+   *  reaches this share of the day-start balance, in percent (0 disables). */
+  maxDailyLossPct: num("MAX_DAILY_LOSS_PCT", 25),
+  /** Daily profit lock: once the day's profit reaches this percent of the
+   *  day-start balance, protect it by tiers (0 disables). */
+  dailyProfitLockPct: num("DAILY_PROFIT_LOCK_PCT", 25),
+  /** Tier size for the daily profit lock, in percent points. Example: peak
+   *  +45% with tier 5 -> stop trading for the day if profit drops below +40%. */
+  dailyProfitTierPct: num("DAILY_PROFIT_TIER_PCT", 5),
+
+  /** Force-exit a position after this many minutes if no TP was hit (0 disables). */
   maxHoldMinutes: num("MAX_HOLD_MINUTES", 60),
   /** Priority fee in micro-lamports per compute unit for fast inclusion. */
   priorityFeeMicroLamports: num("PRIORITY_FEE_MICRO_LAMPORTS", 250_000),
@@ -130,13 +149,18 @@ export const TUNABLE_KEYS = [
   "buyAmountSol",
   "maxOpenPositions",
   "slippageBps",
-  "tp1Pct",
-  "tp1SellFraction",
-  "takeProfitPct",
   "stopLossPct",
-  "trailingStopPct",
+  "tp1Pct",
+  "tp1FloorPct",
+  "tp2Pct",
+  "tp2FloorPct",
+  "tp3Pct",
+  "runnerKeepFraction",
+  "runnerTrailPct",
+  "maxDailyLossPct",
+  "dailyProfitLockPct",
+  "dailyProfitTierPct",
   "maxHoldMinutes",
-  "maxDailyLossSol",
   "minLiquidityUsd",
   "maxFdvUsd",
   "minFdvUsd",
@@ -164,12 +188,19 @@ export function validateConfig(): void {
     throw new Error("STOP_LOSS_PCT must be between 1 and 99");
   }
   if (config.maxOpenPositions < 1) throw new Error("MAX_OPEN_POSITIONS must be >= 1");
-  if (config.tp1SellFraction <= 0 || config.tp1SellFraction >= 1) {
-    throw new Error("TP1_SELL_FRACTION must be strictly between 0 and 1");
+  if (!(config.tp1Pct < config.tp2Pct && config.tp2Pct < config.tp3Pct)) {
+    throw new Error("TP levels must be increasing: TP1_PCT < TP2_PCT < TP3_PCT");
   }
-  if (config.tp1Pct > 0 && config.tp1Pct >= config.takeProfitPct) {
-    throw new Error("TP1_PCT must be lower than TAKE_PROFIT_PCT");
+  if (config.tp1FloorPct >= config.tp1Pct) {
+    throw new Error("TP1_FLOOR_PCT must be lower than TP1_PCT");
   }
+  if (config.tp2FloorPct >= config.tp2Pct) {
+    throw new Error("TP2_FLOOR_PCT must be lower than TP2_PCT");
+  }
+  if (config.runnerKeepFraction <= 0 || config.runnerKeepFraction >= 1) {
+    throw new Error("RUNNER_KEEP_FRACTION must be strictly between 0 and 1");
+  }
+  if (config.runnerTrailPct <= 0) throw new Error("RUNNER_TRAIL_PCT must be > 0");
   if (config.telegramBotToken !== "" && config.telegramChatId === "") {
     throw new Error("TELEGRAM_CHAT_ID is required when TELEGRAM_BOT_TOKEN is set");
   }

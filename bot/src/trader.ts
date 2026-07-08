@@ -13,8 +13,10 @@ import { SOL_MINT } from "./wallet.js";
 
 export class Trader {
   readonly state: BotState;
-  /** UTC date for which the daily-loss pause was already announced. */
+  /** UTC date for which a daily pause (loss cap / profit lock) was announced. */
   private dailyPauseAnnouncedFor = "";
+  /** Live-mode wallet balance snapshot (SOL), refreshed at startup. */
+  private walletBalanceSol = 0;
 
   constructor() {
     this.state = loadState();
@@ -23,7 +25,8 @@ export class Trader {
 
   /**
    * One-time async setup: funds the paper wallet from PAPER_BALANCE_EUR at
-   * the live SOL/EUR rate on the very first run.
+   * the live SOL/EUR rate on the very first run, and records the day-start
+   * balance used by the daily loss cap and profit lock.
    */
   async init(): Promise<void> {
     if (config.dryRun && this.state.paperBalanceLamports === undefined) {
@@ -36,6 +39,34 @@ export class Trader {
           `(1 SOL = ${eurPerSol.toFixed(2)}€)`,
       );
     }
+    if (!config.dryRun) {
+      const { getConnection, getKeypair } = await import("./wallet.js");
+      const keypair = getKeypair();
+      if (keypair) {
+        this.walletBalanceSol =
+          (await getConnection().getBalance(keypair.publicKey)) / LAMPORTS_PER_SOL;
+      }
+    }
+    if (this.state.daily.startBalanceSol === undefined) {
+      this.state.daily.startBalanceSol = this.currentEquitySol();
+      saveState(this.state);
+    }
+  }
+
+  /**
+   * Estimated total equity in SOL: free balance plus the cost basis still
+   * deployed in open positions. Reference for the daily percentage rules.
+   */
+  private currentEquitySol(): number {
+    const deployedLamports = this.openPositions.reduce(
+      (sum, p) =>
+        sum + p.solSpentLamports * (Number(p.remainingTokenRaw) / Number(p.tokenAmountRaw)),
+      0,
+    );
+    const freeSol = config.dryRun
+      ? this.paperBalanceLamports / LAMPORTS_PER_SOL
+      : this.walletBalanceSol;
+    return freeSol + deployedLamports / LAMPORTS_PER_SOL;
   }
 
   get openPositions(): Position[] {
@@ -76,32 +107,80 @@ export class Trader {
     }
   }
 
+  /** Resets the daily counters when the UTC day changes. */
+  private rollDailyIfNeeded(): void {
+    const today = todayUtc();
+    if (this.state.daily.date !== today) {
+      this.state.daily = {
+        date: today,
+        pnlSol: 0,
+        startBalanceSol: this.currentEquitySol(),
+        peakProfitPct: 0,
+      };
+    }
+  }
+
   /** Books realized PnL both globally and in the rolling daily counter. */
   private addRealizedPnl(pnlSol: number): void {
     this.state.realizedPnlSol += pnlSol;
-    const today = todayUtc();
-    if (this.state.daily.date !== today) {
-      this.state.daily = { date: today, pnlSol: 0 };
-    }
+    this.rollDailyIfNeeded();
     this.state.daily.pnlSol += pnlSol;
   }
 
-  /** True when the daily loss cap is hit: no new buys for the rest of the UTC day. */
-  private isDailyLossCapHit(): boolean {
-    if (config.maxDailyLossSol <= 0) return false;
+  /** Day's realized PnL as a percentage of the day-start balance. */
+  private dailyProfitPct(): number {
+    const reference = this.state.daily.startBalanceSol ?? 0;
+    if (reference <= 0) return 0;
+    return (this.state.daily.pnlSol / reference) * 100;
+  }
+
+  private announceDailyPause(message: string): void {
     const today = todayUtc();
-    if (this.state.daily.date !== today) return false;
-    const hit = this.state.daily.pnlSol <= -config.maxDailyLossSol;
-    if (hit && this.dailyPauseAnnouncedFor !== today) {
-      this.dailyPauseAnnouncedFor = today;
-      const message =
-        `Daily loss cap hit (${this.state.daily.pnlSol.toFixed(4)} SOL <= ` +
-        `-${config.maxDailyLossSol} SOL): pausing new buys until tomorrow UTC. ` +
-        `Open positions are still monitored.`;
-      log.warn(message);
-      notify(`⛔ ${message}`);
+    if (this.dailyPauseAnnouncedFor === today) return;
+    this.dailyPauseAnnouncedFor = today;
+    log.warn(message);
+    notify(`⛔ ${message}`);
+  }
+
+  /**
+   * Daily circuit breakers — both stop NEW buys for the rest of the UTC day
+   * (open positions are always still monitored and can exit):
+   *  1. Loss cap: the day's realized loss reaches MAX_DAILY_LOSS_PCT of the
+   *     day-start balance.
+   *  2. Tiered profit lock: once the day's profit reached
+   *     DAILY_PROFIT_LOCK_PCT, it must stay above the last
+   *     DAILY_PROFIT_TIER_PCT tier below the day's peak (e.g. peak +45%,
+   *     tier 5 -> stop for the day if profit drops below +40%).
+   */
+  private isDailyStopHit(): boolean {
+    this.rollDailyIfNeeded();
+    const profitPct = this.dailyProfitPct();
+
+    if (config.maxDailyLossPct > 0 && profitPct <= -config.maxDailyLossPct) {
+      this.announceDailyPause(
+        `Daily loss cap hit (${profitPct.toFixed(1)}% <= -${config.maxDailyLossPct}% ` +
+          `of the day-start balance): pausing new buys until tomorrow UTC.`,
+      );
+      return true;
     }
-    return hit;
+
+    if (config.dailyProfitLockPct > 0) {
+      const peak = Math.max(this.state.daily.peakProfitPct ?? 0, profitPct);
+      this.state.daily.peakProfitPct = peak;
+      if (peak >= config.dailyProfitLockPct) {
+        const tier = config.dailyProfitTierPct;
+        const floor = Math.floor(peak / tier) * tier - tier;
+        if (profitPct < floor) {
+          this.announceDailyPause(
+            `Daily profit lock: peak +${peak.toFixed(1)}%, profit fell to ` +
+              `+${profitPct.toFixed(1)}% (< +${floor}% floor). Locking in gains — ` +
+              `no new buys until tomorrow UTC.`,
+          );
+          return true;
+        }
+      }
+    }
+    return false;
   }
 
   // ---- Entry ----
@@ -109,7 +188,7 @@ export class Trader {
   /** One discovery pass: finds candidates and opens positions if slots are free. */
   async scanAndBuy(): Promise<void> {
     if (!this.tradingEnabled) return;
-    if (this.isDailyLossCapHit()) return;
+    if (this.isDailyStopHit()) return;
     const freeSlots = config.maxOpenPositions - this.openPositions.length;
     if (freeSlots <= 0) return;
 
@@ -202,7 +281,7 @@ export class Trader {
       solSpentLamports: Number(lamports),
       tokenAmountRaw: quote.outAmount,
       remainingTokenRaw: quote.outAmount,
-      tp1Done: false,
+      tpLevel: 0,
       tokenDecimals: decimals,
       entryPriceUsd: candidate.priceUsd,
       peakPriceUsd: candidate.priceUsd,
@@ -226,9 +305,18 @@ export class Trader {
     );
   }
 
-  // ---- Exit ----
+  // ---- Exit: take-profit ladder ----
+  //
+  // Level 0 (no TP hit): hard stop at -STOP_LOSS_PCT, timeout at MAX_HOLD_MINUTES.
+  //   -> at +TP1_PCT: sell 50%, stop moves UP to +TP1_FLOOR_PCT.
+  // Level 1: exit everything if PnL falls back to +TP1_FLOOR_PCT.
+  //   -> at +TP2_PCT: sell 50% of what remains, stop moves up to +TP2_FLOOR_PCT.
+  // Level 2: exit everything if PnL falls back to +TP2_FLOOR_PCT.
+  //   -> at +TP3_PCT: sell everything except RUNNER_KEEP_FRACTION.
+  // Level 3 (runner): no upper target; a trailing stop follows the peak PnL
+  //   at RUNNER_TRAIL_PCT points below it and only ever moves up.
 
-  /** One monitoring pass: checks every open position against exit rules. */
+  /** One monitoring pass: checks every open position against the ladder. */
   async monitorPositions(): Promise<void> {
     for (const position of this.openPositions) {
       const price = await getTokenPriceUsd(position.mint);
@@ -238,32 +326,54 @@ export class Trader {
         position.peakPriceUsd = price;
       }
 
-      const pnlPct = ((price - position.entryPriceUsd) / position.entryPriceUsd) * 100;
-      const drawdownFromPeakPct =
-        ((position.peakPriceUsd - price) / position.peakPriceUsd) * 100;
+      const entry = position.entryPriceUsd;
+      const pnlPct = ((price - entry) / entry) * 100;
+      const peakPnlPct = ((position.peakPriceUsd - entry) / entry) * 100;
       const heldMinutes = (Date.now() - position.openedAt) / 60_000;
 
-      // TP1: lock in part of the profit, let the rest ride under the trailing stop.
-      if (config.tp1Pct > 0 && !position.tp1Done && pnlPct >= config.tp1Pct) {
-        try {
-          await this.partialTakeProfit(position, pnlPct);
-        } catch (err) {
-          log.error(`TP1 sell failed for ${position.symbol}: ${String(err)} — will retry`);
+      // ---- Ladder triggers (partial sells) ----
+      try {
+        if (position.tpLevel === 0 && pnlPct >= config.tp1Pct) {
+          await this.ladderSell(position, 0.5, 1, pnlPct, `stop verrouillé à +${config.tp1FloorPct}%`);
+          continue;
         }
-        continue; // re-evaluate full exits on the next tick
+        if (position.tpLevel === 1 && pnlPct >= config.tp2Pct) {
+          await this.ladderSell(position, 0.5, 2, pnlPct, `stop verrouillé à +${config.tp2FloorPct}%`);
+          continue;
+        }
+        if (position.tpLevel === 2 && pnlPct >= config.tp3Pct) {
+          await this.ladderSell(
+            position,
+            1 - config.runnerKeepFraction,
+            3,
+            pnlPct,
+            `runner ${Math.round(config.runnerKeepFraction * 100)}% avec trailing stop`,
+          );
+          position.runnerStopPct = pnlPct - config.runnerTrailPct;
+          saveState(this.state);
+          continue;
+        }
+      } catch (err) {
+        log.error(`TP sell failed for ${position.symbol}: ${String(err)} — will retry`);
+        continue;
       }
 
+      // ---- Stop rules per ladder level ----
       let exitReason: ExitReason | undefined;
-      if (pnlPct >= config.takeProfitPct) exitReason = "take_profit";
-      else if (pnlPct <= -config.stopLossPct) exitReason = "stop_loss";
-      else if (
-        config.trailingStopPct > 0 &&
-        pnlPct > 0 &&
-        drawdownFromPeakPct >= config.trailingStopPct
-      ) {
-        exitReason = "trailing_stop";
-      } else if (config.maxHoldMinutes > 0 && heldMinutes >= config.maxHoldMinutes) {
-        exitReason = "max_hold_time";
+      if (position.tpLevel === 0) {
+        if (pnlPct <= -config.stopLossPct) exitReason = "stop_loss";
+        else if (config.maxHoldMinutes > 0 && heldMinutes >= config.maxHoldMinutes) {
+          exitReason = "max_hold_time";
+        }
+      } else if (position.tpLevel === 1) {
+        if (pnlPct <= config.tp1FloorPct) exitReason = "profit_floor";
+      } else if (position.tpLevel === 2) {
+        if (pnlPct <= config.tp2FloorPct) exitReason = "profit_floor";
+      } else {
+        // Runner: ratchet the trailing stop with the peak, exit when touched.
+        const ratchet = peakPnlPct - config.runnerTrailPct;
+        position.runnerStopPct = Math.max(position.runnerStopPct ?? ratchet, ratchet);
+        if (pnlPct <= position.runnerStopPct) exitReason = "runner_trailing_stop";
       }
 
       if (exitReason) {
@@ -273,9 +383,17 @@ export class Trader {
           log.error(`Sell failed for ${position.symbol}: ${String(err)} — will retry`);
         }
       } else {
+        const stopLabel =
+          position.tpLevel === 0
+            ? `SL -${config.stopLossPct}%`
+            : position.tpLevel === 1
+              ? `floor +${config.tp1FloorPct}%`
+              : position.tpLevel === 2
+                ? `floor +${config.tp2FloorPct}%`
+                : `trail +${(position.runnerStopPct ?? 0).toFixed(0)}%`;
         log.debug(
           `${position.symbol}: $${price} (${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(1)}%, ` +
-            `peak drawdown ${drawdownFromPeakPct.toFixed(1)}%, held ${heldMinutes.toFixed(0)}min)`,
+            `TP${position.tpLevel}, ${stopLabel}, held ${heldMinutes.toFixed(0)}min)`,
         );
       }
     }
@@ -299,12 +417,18 @@ export class Trader {
     return { solReceivedLamports: Number(quote.outAmount), signature };
   }
 
-  /** TP1: sell a fraction of the bag and keep the rest running. */
-  private async partialTakeProfit(position: Position, pnlPct: number): Promise<void> {
+  /** Ladder partial sell: sells a fraction of the REMAINING bag and advances the TP level. */
+  private async ladderSell(
+    position: Position,
+    fractionOfRemaining: number,
+    newLevel: number,
+    pnlPct: number,
+    note: string,
+  ): Promise<void> {
     const remaining = BigInt(position.remainingTokenRaw);
-    const toSell = (remaining * BigInt(Math.round(config.tp1SellFraction * 10_000))) / 10_000n;
+    const toSell = (remaining * BigInt(Math.round(fractionOfRemaining * 10_000))) / 10_000n;
     if (toSell <= 0n) {
-      position.tp1Done = true;
+      position.tpLevel = newLevel;
       return;
     }
 
@@ -315,7 +439,7 @@ export class Trader {
     const pnlSol = (solReceivedLamports - costBasis) / LAMPORTS_PER_SOL;
 
     position.remainingTokenRaw = (remaining - toSell).toString();
-    position.tp1Done = true;
+    position.tpLevel = newLevel;
     position.solReceivedLamports = (position.solReceivedLamports ?? 0) + solReceivedLamports;
     if (signature) position.sellTxSignature = signature;
     this.adjustPaperBalance(solReceivedLamports);
@@ -323,9 +447,9 @@ export class Trader {
     saveState(this.state);
 
     const message =
-      `${position.paper ? "[PAPER] " : ""}TP1 ${position.symbol} — sold ` +
-      `${Math.round(config.tp1SellFraction * 100)}% at +${pnlPct.toFixed(1)}% ` +
-      `(+${pnlSol.toFixed(4)} SOL locked in), letting the rest ride`;
+      `${position.paper ? "[PAPER] " : ""}TP${newLevel} ${position.symbol} — vendu ` +
+      `${Math.round(fractionOfRemaining * 100)}% du restant à +${pnlPct.toFixed(1)}% ` +
+      `(+${pnlSol.toFixed(4)} SOL sécurisés) — ${note}`;
     log.info(message);
     notify(`🟡 ${message}`);
   }
