@@ -80,6 +80,10 @@ export interface Position {
   solSpentLamports: number;
   /** Raw token amount received (in the token's base units). */
   tokenAmountRaw: string;
+  /** Raw token amount still held (decreases after partial take-profits). */
+  remainingTokenRaw: string;
+  /** True once the TP1 partial sell has been executed. */
+  tp1Done: boolean;
   tokenDecimals: number;
   entryPriceUsd: number;
   /** Highest price observed while the position is open (for trailing stop). */
@@ -88,7 +92,7 @@ export interface Position {
   closedAt?: number;
   exitPriceUsd?: number;
   exitReason?: ExitReason;
-  /** Lamports of SOL received when closing. */
+  /** Total lamports of SOL received back (partial sells + final close). */
   solReceivedLamports?: number;
   pnlPct?: number;
   buyTxSignature?: string;
@@ -101,4 +105,6 @@ export interface BotState {
   /** mint -> last time (ms) we exited or rejected it, for the re-entry cooldown. */
   cooldowns: Record<string, number>;
   realizedPnlSol: number;
+  /** Rolling realized PnL for the current UTC day, for the daily loss cap. */
+  daily: { date: string; pnlSol: number };
 }

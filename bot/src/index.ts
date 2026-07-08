@@ -1,6 +1,7 @@
 import { config, validateConfig } from "./config.js";
 import { sleep } from "./http.js";
 import { log } from "./logger.js";
+import { notify } from "./notify.js";
 import { Trader } from "./trader.js";
 import { checkWalletBalance } from "./wallet.js";
 
@@ -22,6 +23,10 @@ async function main(): Promise<void> {
     await sleep(5_000);
   }
   await checkWalletBalance();
+  notify(
+    `🤖 Bot started in ${config.dryRun ? "PAPER" : "LIVE"} mode — ` +
+      `${config.buyAmountSol} SOL/position, max ${config.maxOpenPositions} positions`,
+  );
 
   const trader = new Trader();
 

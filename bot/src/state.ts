@@ -6,11 +6,35 @@ import type { BotState } from "./types.js";
 
 const statePath = resolve(config.stateFile);
 
+export function todayUtc(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function emptyState(): BotState {
+  return {
+    positions: [],
+    cooldowns: {},
+    realizedPnlSol: 0,
+    daily: { date: todayUtc(), pnlSol: 0 },
+  };
+}
+
+/** Fills in fields added after a state file was written by an older version. */
+function normalize(state: BotState): BotState {
+  state.daily ??= { date: todayUtc(), pnlSol: 0 };
+  for (const position of state.positions) {
+    position.remainingTokenRaw ??= position.tokenAmountRaw;
+    position.tp1Done ??= false;
+  }
+  return state;
+}
+
 export function loadState(): BotState {
   try {
     const raw = readFileSync(statePath, "utf8");
     const state = JSON.parse(raw) as BotState;
     if (!Array.isArray(state.positions)) throw new Error("corrupt state: positions");
+    normalize(state);
     log.info(
       `State loaded: ${state.positions.filter((p) => p.status === "open").length} open positions, ` +
         `realized PnL ${state.realizedPnlSol.toFixed(4)} SOL`,
@@ -20,7 +44,7 @@ export function loadState(): BotState {
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
       log.warn(`Could not load state file, starting fresh: ${String(err)}`);
     }
-    return { positions: [], cooldowns: {}, realizedPnlSol: 0 };
+    return emptyState();
   }
 }
 

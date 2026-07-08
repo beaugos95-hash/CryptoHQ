@@ -36,10 +36,16 @@ export const config = {
   maxOpenPositions: num("MAX_OPEN_POSITIONS", 3),
   /** Max slippage tolerated on swaps, in basis points (300 = 3%). */
   slippageBps: num("SLIPPAGE_BPS", 300),
-  /** Take-profit threshold in percent (e.g. 60 = +60%). */
-  takeProfitPct: num("TAKE_PROFIT_PCT", 60),
+  /** First take-profit level in percent: sell TP1_SELL_FRACTION of the bag (0 disables). */
+  tp1Pct: num("TP1_PCT", 40),
+  /** Fraction of the position sold at TP1 (0.5 = half). */
+  tp1SellFraction: num("TP1_SELL_FRACTION", 0.5),
+  /** Final take-profit threshold in percent: closes the whole position. */
+  takeProfitPct: num("TAKE_PROFIT_PCT", 100),
   /** Hard stop-loss threshold in percent (e.g. 25 = -25%). */
   stopLossPct: num("STOP_LOSS_PCT", 25),
+  /** Pause new buys for the rest of the UTC day once realized losses reach this (0 disables). */
+  maxDailyLossSol: num("MAX_DAILY_LOSS_SOL", 0.25),
   /** Trailing stop: exit if price falls this % below the peak reached (0 disables). */
   trailingStopPct: num("TRAILING_STOP_PCT", 20),
   /** Force-exit a position after this many minutes regardless of PnL (0 disables). */
@@ -66,6 +72,11 @@ export const config = {
   requirePositiveMomentum: bool("REQUIRE_POSITIVE_MOMENTUM", true),
   /** Max share of supply held by the single largest non-pool holder, in percent. */
   maxTopHolderPct: num("MAX_TOP_HOLDER_PCT", 15),
+  /** Honeypot guard: simulate a sell route before buying and reject the token
+   *  if selling is impossible or the round trip loses too much. */
+  honeypotCheck: bool("HONEYPOT_CHECK", true),
+  /** Max acceptable buy+sell round-trip loss in percent for the honeypot guard. */
+  maxRoundTripLossPct: num("MAX_ROUND_TRIP_LOSS_PCT", 10),
 
   // ---- Loop timing ----
   /** Delay between discovery scans, in seconds. */
@@ -77,6 +88,10 @@ export const config = {
 
   /** File where the bot persists its state (positions, history) across restarts. */
   stateFile: str("STATE_FILE", "state/bot-state.json"),
+
+  // ---- Notifications (optional) ----
+  telegramBotToken: process.env.TELEGRAM_BOT_TOKEN ?? "",
+  telegramChatId: process.env.TELEGRAM_CHAT_ID ?? "",
 } as const;
 
 export type Config = typeof config;
@@ -93,4 +108,13 @@ export function validateConfig(): void {
     throw new Error("STOP_LOSS_PCT must be between 1 and 99");
   }
   if (config.maxOpenPositions < 1) throw new Error("MAX_OPEN_POSITIONS must be >= 1");
+  if (config.tp1SellFraction <= 0 || config.tp1SellFraction >= 1) {
+    throw new Error("TP1_SELL_FRACTION must be strictly between 0 and 1");
+  }
+  if (config.tp1Pct > 0 && config.tp1Pct >= config.takeProfitPct) {
+    throw new Error("TP1_PCT must be lower than TAKE_PROFIT_PCT");
+  }
+  if (config.telegramBotToken !== "" && config.telegramChatId === "") {
+    throw new Error("TELEGRAM_CHAT_ID is required when TELEGRAM_BOT_TOKEN is set");
+  }
 }
