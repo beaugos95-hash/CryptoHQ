@@ -12,6 +12,10 @@ dist
 dist-ssr
 *.local
 
+# Trading bot secrets & runtime state
+bot/.env
+bot/state/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

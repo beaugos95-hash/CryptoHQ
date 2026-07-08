@@ -1,0 +1,26 @@
+{
+  "name": "memecoin-sniper-bot",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "High-performance Solana meme coin trading bot (Jupiter + DexScreener) with on-chain rug checks and paper-trading mode",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "@solana/web3.js": "^1.98.0",
+    "bs58": "^6.0.0",
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}
