@@ -41,6 +41,8 @@ export interface TokenCandidate {
   sellsLastHour: number;
   priceChangeM5: number;
   priceChangeH1: number;
+  priceChangeH6: number;
+  priceChangeH24: number;
   pairAgeMinutes: number;
   dexScreenerUrl: string;
   /** Set during enrichment (Birdeye): token has Twitter/Telegram/website. */

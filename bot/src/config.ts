@@ -49,8 +49,10 @@ export const config = {
   paperBalanceEur: num("PAPER_BALANCE_EUR", 500),
 
   // ---- Trade sizing & risk ----
-  /** Amount of SOL committed per position. */
-  buyAmountSol: num("BUY_AMOUNT_SOL", 0.05),
+  /** Stake for the MOST volatile tokens, in EUR (converted to SOL at buy time). */
+  minStakeEur: num("MIN_STAKE_EUR", 10),
+  /** Stake for the LEAST volatile tokens, in EUR. */
+  maxStakeEur: num("MAX_STAKE_EUR", 50),
   /** Max number of simultaneously open positions. */
   maxOpenPositions: num("MAX_OPEN_POSITIONS", 3),
   /** Max slippage tolerated on swaps, in basis points (300 = 3%). */
@@ -146,7 +148,8 @@ export type Config = typeof config;
 
 /** Parameters adjustable at runtime via the Telegram /set command. */
 export const TUNABLE_KEYS = [
-  "buyAmountSol",
+  "minStakeEur",
+  "maxStakeEur",
   "maxOpenPositions",
   "slippageBps",
   "stopLossPct",
@@ -180,7 +183,10 @@ export function validateConfig(): void {
   if (!config.dryRun && !config.privateKey) {
     throw new Error("DRY_RUN=false requires PRIVATE_KEY to be set");
   }
-  if (config.buyAmountSol <= 0) throw new Error("BUY_AMOUNT_SOL must be > 0");
+  if (config.minStakeEur <= 0) throw new Error("MIN_STAKE_EUR must be > 0");
+  if (config.maxStakeEur < config.minStakeEur) {
+    throw new Error("MAX_STAKE_EUR must be >= MIN_STAKE_EUR");
+  }
   if (config.slippageBps <= 0 || config.slippageBps > 5_000) {
     throw new Error("SLIPPAGE_BPS must be between 1 and 5000");
   }

@@ -6,6 +6,7 @@ Bot de trading automatisé pour meme coins sur Solana, conçu pour être **rapid
 - **Enrichissement social** : les meilleurs candidats sont enrichis via **Birdeye** (présence Twitter/Telegram/site web) et, si un bearer token API v2 est fourni, via **Twitter/X** (nombre de tweets mentionnant le token dans la dernière heure — détecte les drops coordonnés). Le score de classement en tient compte.
 - **Contrôle total par Telegram** : `/startbot`, `/stopbot`, `/status`, `/positions`, `/stats`, `/buy <mint>`, `/sell <symbole|all>`, `/panic` (tout vendre + pause), `/set <param> <valeur>` (réglage à chaud de 20+ paramètres), `/settings`, `/help`. Seul le chat configuré peut commander le bot.
 - **Portefeuille virtuel en euros** : en paper trading, le bot démarre avec `PAPER_BALANCE_EUR` (500 € par défaut) convertis en SOL au cours réel ; chaque achat débite la balance, chaque vente la crédite.
+- **Mise dynamique selon la volatilité** : chaque token reçoit un score de volatilité (amplitude des mouvements 5 min/1 h/6 h, liquidité du pool, âge de la paire, turnover volume/liquidité) qui module la mise entre `MIN_STAKE_EUR` (10 € pour les plus volatils) et `MAX_STAKE_EUR` (50 € pour les plus calmes), convertie en SOL au cours du moment.
 - **Anti-rug on-chain** : avant chaque achat, vérifie directement sur la blockchain que la *mint authority* et la *freeze authority* sont révoquées, et que la distribution des holders n'est pas trop concentrée (repli sur l'API RugCheck si le RPC est limité).
 - **Anti-honeypot** : avant chaque achat, simule la revente du montant exact qui serait détenu ; si aucune route de vente n'existe ou si l'aller-retour achat+vente perd plus de `MAX_ROUND_TRIP_LOSS_PCT`, le token est rejeté (taxes cachées, liquidité à sens unique).
 - **Exécution** : swaps via l'agrégateur **Jupiter** (meilleure route sur tous les DEX Solana), avec *priority fees* pour une inclusion rapide et confirmation vérifiée de chaque transaction.
@@ -48,7 +49,7 @@ npm run stats
 
 | Variable | Défaut | Rôle |
 |---|---|---|
-| `BUY_AMOUNT_SOL` | `0.05` | Montant de SOL engagé par position |
+| `MIN_STAKE_EUR` / `MAX_STAKE_EUR` | `10` / `50` | Mise par token selon sa volatilité (10 € = très volatil, 50 € = calme) |
 | `MAX_OPEN_POSITIONS` | `3` | Positions simultanées maximum |
 | `STOP_LOSS_PCT` | `12` | Stop-loss de base à −12 % (avant tout TP) |
 | `TP1_PCT` / `TP1_FLOOR_PCT` | `15` / `10` | À +15 % : vend 50 %, stop verrouillé à +10 % |
@@ -79,8 +80,9 @@ src/
 ├── twitter.ts    # Buzz Twitter/X par token (nécessite un bearer token payant)
 ├── safety.ts     # Contrôles anti-rug (mint/freeze authority, holders, RugCheck)
 ├── jupiter.ts    # Quotes et exécution des swaps (Jupiter), confirmation on-chain
-├── trader.ts     # Positions : anti-honeypot, TP1 partiel, TP/SL/trailing/timeout,
-│                 #   balance papier, achats/ventes manuels
+├── trader.ts     # Positions : anti-honeypot, ladder TP1/TP2/TP3 + runner,
+│                 #   coupe-circuits journaliers, balance papier, ordres manuels
+├── sizing.ts     # Mise dynamique 10-50€ selon la volatilité du token
 ├── telegram.ts   # Contrôle complet par Telegram (long polling, chat autorisé)
 ├── fx.ts         # Taux SOL/EUR (CoinGecko, cache 5 min)
 ├── stats.ts      # Rapport de statistiques (npm run stats)

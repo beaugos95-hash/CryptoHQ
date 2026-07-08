@@ -85,6 +85,8 @@ function pairToCandidate(pair: DexPair): TokenCandidate {
     sellsLastHour: pair.txns?.h1?.sells ?? 0,
     priceChangeM5: pair.priceChange?.m5 ?? 0,
     priceChangeH1: pair.priceChange?.h1 ?? 0,
+    priceChangeH6: pair.priceChange?.h6 ?? 0,
+    priceChangeH24: pair.priceChange?.h24 ?? 0,
     pairAgeMinutes: ageMs / 60_000,
     dexScreenerUrl: pair.url,
   };

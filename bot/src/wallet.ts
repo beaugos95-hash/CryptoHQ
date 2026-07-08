@@ -1,6 +1,7 @@
 import { Connection, Keypair, LAMPORTS_PER_SOL } from "@solana/web3.js";
 import bs58 from "bs58";
 import { config } from "./config.js";
+import { getSolRates } from "./fx.js";
 import { log } from "./logger.js";
 
 export const SOL_MINT = "So11111111111111111111111111111111111111112";
@@ -38,7 +39,8 @@ export async function checkWalletBalance(): Promise<void> {
   const lamports = await getConnection().getBalance(kp.publicKey);
   const sol = lamports / LAMPORTS_PER_SOL;
   log.info(`Wallet ${kp.publicKey.toBase58()} balance: ${sol.toFixed(4)} SOL`);
-  const needed = config.buyAmountSol * config.maxOpenPositions + 0.05;
+  const { eurPerSol } = await getSolRates();
+  const needed = (config.maxStakeEur / eurPerSol) * config.maxOpenPositions + 0.05;
   if (!config.dryRun && sol < needed) {
     log.warn(
       `Balance may be insufficient: ${sol.toFixed(4)} SOL available, ` +

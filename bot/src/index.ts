@@ -14,7 +14,7 @@ async function main(): Promise<void> {
 
   log.info("Meme coin trading bot starting", {
     mode: config.dryRun ? "PAPER (dry-run)" : "LIVE",
-    buyAmountSol: config.buyAmountSol,
+    stake: `${config.minStakeEur}€ (haute volatilité) → ${config.maxStakeEur}€ (faible volatilité)`,
     maxOpenPositions: config.maxOpenPositions,
     ladder: `SL -${config.stopLossPct}% | TP1 +${config.tp1Pct}% (floor +${config.tp1FloorPct}%) | TP2 +${config.tp2Pct}% (floor +${config.tp2FloorPct}%) | TP3 +${config.tp3Pct}% (runner ${config.runnerKeepFraction * 100}%, trail ${config.runnerTrailPct}pts)`,
     daily: `loss cap -${config.maxDailyLossPct}%, profit lock +${config.dailyProfitLockPct}% (tiers ${config.dailyProfitTierPct}pts)`,

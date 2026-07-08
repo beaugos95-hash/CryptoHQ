@@ -138,6 +138,40 @@ writeState([], { pnlSol: 0.20, startBalanceSol: 1, peakProfitPct: 20 });
 trader = await freshTrader();
 check("Profit lock inactive below +25%", trader["isDailyStopHit"]() === false);
 
+// --- Volatility-based sizing ---
+const { volatilityScore, stakeEurFor } = await import("./dist/sizing.js");
+
+function makeCandidate(overrides = {}) {
+  return {
+    mint: BONK, symbol: "TEST", name: "Test", pairAddress: "x", dexId: "raydium",
+    priceUsd: 1, liquidityUsd: 100_000, fdvUsd: 1_000_000, volume24hUsd: 100_000,
+    buysLastHour: 100, sellsLastHour: 50, priceChangeM5: 2, priceChangeH1: 10,
+    priceChangeH6: 20, priceChangeH24: 30, pairAgeMinutes: 24 * 60,
+    dexScreenerUrl: "", ...overrides,
+  };
+}
+
+const calm = makeCandidate({
+  liquidityUsd: 300_000, volume24hUsd: 150_000, pairAgeMinutes: 72 * 60,
+  priceChangeM5: 0.5, priceChangeH1: 3, priceChangeH6: 8,
+});
+const wild = makeCandidate({
+  liquidityUsd: 21_000, volume24hUsd: 400_000, pairAgeMinutes: 45,
+  priceChangeM5: 25, priceChangeH1: 80, priceChangeH6: 200,
+});
+const calmStake = stakeEurFor(calm);
+const wildStake = stakeEurFor(wild);
+check("Sizing: calm token gets a large stake", calmStake >= 45, `${calmStake}€ (vol ${(volatilityScore(calm) * 100).toFixed(0)}%)`);
+check("Sizing: wild token gets a small stake", wildStake <= 12, `${wildStake}€ (vol ${(volatilityScore(wild) * 100).toFixed(0)}%)`);
+check("Sizing: bounds respected", calmStake <= 50 && wildStake >= 10, `[${wildStake}, ${calmStake}]`);
+const medium = makeCandidate();
+const mediumStake = stakeEurFor(medium);
+check(
+  "Sizing: medium token in between",
+  mediumStake > wildStake && mediumStake < calmStake,
+  `${wildStake}€ < ${mediumStake}€ < ${calmStake}€`,
+);
+
 rmSync(STATE, { force: true });
 console.log(failures === 0 ? "\nALL TESTS PASSED" : `\n${failures} TEST(S) FAILED`);
 process.exit(failures === 0 ? 0 : 1);

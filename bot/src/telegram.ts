@@ -40,7 +40,7 @@ const HELP = `🤖 *Commandes disponibles*
 
 *Réglages*
 /set \`<param> <valeur>\` — modifier un paramètre à chaud
-Exemple : \`/set buyAmountSol 0.1\`
+Exemple : \`/set maxStakeEur 75\`
 
 /help — ce message`;
 
@@ -197,6 +197,7 @@ export class TelegramControl {
       `PnL réalisé : ${state.realizedPnlSol >= 0 ? "+" : ""}${state.realizedPnlSol.toFixed(4)} SOL (${pnlEur >= 0 ? "+" : ""}${pnlEur.toFixed(2)}€)`,
       `PnL du jour : ${state.daily.pnlSol >= 0 ? "+" : ""}${state.daily.pnlSol.toFixed(4)} SOL`,
       `Positions : ${open.length}/${config.maxOpenPositions}`,
+      `Mise/token : ${config.minStakeEur}€ (volatil) → ${config.maxStakeEur}€ (calme)`,
       `Sources : DexScreener ✅, Birdeye ${config.birdeyeApiKey ? "✅" : "—"}, ` +
         `Twitter ${twitterEnabled() ? "✅" : "—"}, GMGN ${config.gmgnEnabled ? "(best effort)" : "—"}`,
     );

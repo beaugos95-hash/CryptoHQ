@@ -6,6 +6,7 @@ import { getSolRates } from "./fx.js";
 import { log } from "./logger.js";
 import { notify } from "./notify.js";
 import { checkTokenSafety } from "./safety.js";
+import { stakeEurFor, volatilityScore } from "./sizing.js";
 import { getQuote, executeSwap } from "./jupiter.js";
 import { loadState, saveState, todayUtc } from "./state.js";
 import type { BotState, ExitReason, Position, TokenCandidate } from "./types.js";
@@ -250,8 +251,14 @@ export class Trader {
     }
   }
 
-  private async openPosition(candidate: TokenCandidate, decimals: number): Promise<void> {
-    const lamports = BigInt(Math.round(config.buyAmountSol * LAMPORTS_PER_SOL));
+  private async openPosition(candidate: TokenCandidate, decimals: number): Promise<Position> {
+    // Volatility-based sizing: 10€ for the wildest tokens up to 50€ for the
+    // calmest, converted to SOL at the live rate.
+    const volatility = volatilityScore(candidate);
+    const stakeEur = stakeEurFor(candidate);
+    const { eurPerSol } = await getSolRates();
+    const stakeSol = stakeEur / eurPerSol;
+    const lamports = BigInt(Math.round(stakeSol * LAMPORTS_PER_SOL));
     if (config.dryRun && this.paperBalanceLamports < Number(lamports)) {
       throw new Error(
         `insufficient paper balance (${(this.paperBalanceLamports / LAMPORTS_PER_SOL).toFixed(4)} SOL)`,
@@ -293,16 +300,20 @@ export class Trader {
     this.adjustPaperBalance(-Number(lamports));
     saveState(this.state);
 
+    const sizeLabel =
+      `${stakeEur.toFixed(0)}€ (${stakeSol.toFixed(4)} SOL, ` +
+      `volatilité ${(volatility * 100).toFixed(0)}%)`;
     log.info(
-      `${config.dryRun ? "[PAPER] " : ""}BUY ${candidate.symbol} — ` +
-        `${config.buyAmountSol} SOL @ $${candidate.priceUsd} ` +
+      `${config.dryRun ? "[PAPER] " : ""}BUY ${candidate.symbol} — ${sizeLabel} ` +
+        `@ $${candidate.priceUsd} ` +
         `(liq $${Math.round(candidate.liquidityUsd)}, FDV $${Math.round(candidate.fdvUsd)})`,
       { mint: candidate.mint, url: candidate.dexScreenerUrl },
     );
     notify(
-      `🟢 ${config.dryRun ? "[PAPER] " : ""}BUY ${candidate.symbol} — ` +
-        `${config.buyAmountSol} SOL @ $${candidate.priceUsd}\n${candidate.dexScreenerUrl}`,
+      `🟢 ${config.dryRun ? "[PAPER] " : ""}BUY ${candidate.symbol} — ${sizeLabel} ` +
+        `@ $${candidate.priceUsd}\n${candidate.dexScreenerUrl}`,
     );
+    return position;
   }
 
   // ---- Exit: take-profit ladder ----
@@ -522,9 +533,10 @@ export class Trader {
     if (!safety.ok) return `Achat refusé — ${safety.reasons.join("; ")}`;
 
     try {
-      await this.openPosition(candidate, safety.decimals);
+      const position = await this.openPosition(candidate, safety.decimals);
       saveState(this.state);
-      return `Achat exécuté : ${candidate.symbol} — ${config.buyAmountSol} SOL @ $${candidate.priceUsd}`;
+      const stakeSol = position.solSpentLamports / LAMPORTS_PER_SOL;
+      return `Achat exécuté : ${candidate.symbol} — ${stakeSol.toFixed(4)} SOL @ $${candidate.priceUsd}`;
     } catch (err) {
       return `Achat échoué : ${String(err)}`;
     }
